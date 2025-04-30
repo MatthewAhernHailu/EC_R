@@ -1,0 +1,32 @@
+
+```{r}
+
+library(dplyr)
+library(readxl)
+library(lubridate)
+library(ggplot2)
+
+raw <- read_excel("C:/Users/ahern/Downloads/TK1001A1_20250430-202945.xlsx")
+
+#  I gathered all columns into DateText + Cars
+cars <- raw %>% 
+  pivot_longer(cols = everything(),
+               names_to  = "DateText",
+               values_to = "Cars") %>% 
+  filter(!is.na(Cars)) %>%                       
+  mutate(Date = ym(gsub("M", "", DateText)),    
+         Cars = as.numeric(Cars))
+
+#  Made a quick line plot
+
+annual <- cars %>% 
+  mutate(Year = year(Date)) %>% 
+  group_by(Year) %>% 
+  summarise(Cars = mean(Cars))
+
+ggplot(annual, aes(Year, Cars)) +
+  geom_line() +
+  labs(title = "Passenger cars in traffic, Sweden (2002–2024, annual average)",
+       y = "Number of cars", x = NULL) +
+  theme_minimal()
+```
