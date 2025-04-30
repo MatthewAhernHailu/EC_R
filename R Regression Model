@@ -1,0 +1,143 @@
+```{r}
+
+
+library(tidyverse)   
+library(readxl)      
+library(ggcorrplot)  
+library(broom)    
+library(knitr)    
+library(dplyr)
+
+volvo <- read_excel("C:/Users/ahern/Downloads/data_insamling_volvo_blocket.xlsx")
+
+####
+# 1.  Data cleaning  
+
+## numeric parsing
+volvo$Motorstorlek <- as.numeric(volvo$Motorstorlek)
+volvo$Hästkrafter  <- as.numeric(volvo$Hästkrafter) # 
+volvo$Miltal       <- as.numeric(volvo$Miltal)
+
+## made new helper columns
+volvo$brand_new <- ifelse(volvo$Miltal == 0, 1, 0)
+volvo$age       <- ifelse(volvo$brand_new == 1, 0, 2025 - volvo$Modellår)
+
+## NA fixes
+volvo$Motorstorlek[is.na(volvo$Motorstorlek) & volvo$Bränsle == "EL"] <- 0
+volvo$Motorstorlek[is.na(volvo$Motorstorlek)] <-
+  median(volvo$Motorstorlek, na.rm = TRUE)
+
+volvo$Hästkrafter[is.na(volvo$Hästkrafter)] <-
+  median(volvo$Hästkrafter, na.rm = TRUE)
+
+for (col in c("Säljare","Växellåda","Biltyp","Drivning",
+              "Färg","Märke","Modell")) {
+  volvo[[col]][is.na(volvo[[col]])] <- "Unknown"
+}
+volvo$Datum_i_trafik <- NULL           
+```
+
+```{r}
+###
+# 2.correlation heat-map 
+
+num_volvo <- volvo %>% 
+               select(where(is.numeric)) %>% 
+               select(-Försäljningspris)         
+
+corr_mat <- round(cor(num_volvo, use = "pairwise.complete.obs"), 2)
+ggcorrplot(corr_mat, hc.order = TRUE, type = "lower", lab = TRUE)
+```
+
+```{r}
+###
+# 3.  Prepare data for modelling 
+##
+
+volvo <- volvo %>% mutate(across(where(is.character), as.factor))
+volvo$log_price <- log(volvo$Försäljningspris)
+
+set.seed(123)
+id      <- sample(nrow(volvo), 0.8 * nrow(volvo))
+train   <- volvo[id, ]
+test    <- volvo[-id, ]
+
+## drop constant predictors and obvious non-features
+train <- train %>%
+           select(where(~ n_distinct(.) > 1)) %>% 
+           select(-Index, -Försäljningspris, -Färg)   # I removed Färg
+
+## mirror same columns in test and align factor levels
+test_x <- test[ , names(train)]
+faccols <- names(train)[sapply(train, is.factor)]
+for (cl in faccols) {
+  test_x[[cl]] <- factor(test_x[[cl]], levels = levels(train[[cl]]))
+}
+
+####
+# 4.  Fit multiple linear regression -
+
+fit <- lm(log_price ~ ., data = train)
+coef_tbl <- tidy(fit, conf.int = TRUE) %>%          
+  mutate(pct_change = round((exp(estimate) - 1) * 100, 1)) %>%  
+  select(term, estimate, std.error, conf.low, conf.high,
+         pct_change, p.value)
+```
+
+```{r}
+kable(coef_tbl, digits = 3,
+      caption = "Regression coefficients, 95% CI and % change in price")
+
+##  Model-level summary (R², RMSE on train set, etc.)
+model_tbl <- glance(fit) %>% 
+  select(r.squared, adj.r.squared, sigma, AIC, BIC) %>% 
+  rename(`R²` = r.squared,
+         `Adj R²` = adj.r.squared,
+         `Residual SD` = sigma)
+
+kable(model_tbl, digits = 3,
+      caption = "Overall model diagnostics")          
+```
+
+```{r}
+####
+# 5.  Diagnostics 
+
+par(mfrow = c(1, 2))
+plot(fit, which = 1)   
+plot(fit, which = 2)   
+
+
+# 6.  Predict and evaluate (transform back logresp)
+
+pred  <- exp(predict(fit, newdata = test_x))          
+rmse  <- sqrt(mean((pred - test$Försäljningspris)^2))
+print(rmse)                                           
+```
+
+```{r}
+#
+# 7.  My plots!
+
+## Age vs log-price
+ggplot(train, aes(age, log_price)) +
+  geom_point(alpha = .3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Price by age of car", x = "Age (years)",
+       y = "log(price)")
+
+## Mileage vs log-price
+ggplot(train, aes(Miltal/1000, log_price)) +
+  geom_point(alpha = .3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Price by Milage", x = "Mileage (thousand km)",
+       y = "log(price)")
+
+## Diffrent Gearboxes box-plots
+ggplot(train, aes(Växellåda, exp(log_price))) +
+  geom_boxplot(fill = "grey80") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Manuel/Automatic Gear cars", y = "Price (kr)", x = "Gearbox")
+
+
+```
